@@ -20,7 +20,7 @@ st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     .stTextInput>div>div>input { border-radius: 8px; }
-    .css-1aumxhk { padding: 1rem; } /* Tab padding */
+    .css-1aumxhk { padding: 1rem; }
     .kanun-kutusu { 
         background-color: #ffffff; 
         padding: 20px; 
@@ -28,6 +28,7 @@ st.markdown("""
         border-radius: 5px; 
         box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         margin-bottom: 15px;
+        white-space: pre-wrap; /* Satır başlarını korur */
     }
     .ictihat-kutusu {
         background-color: #ffffff;
@@ -65,9 +66,11 @@ def parse_pdf(file_bytes):
 
 def extract_metadata(text):
     if not isinstance(text, str): return {}
+    # Regex düzeltmeleri (?i) flag ile
     esas = re.search(r"(?i)Esas\s*No\s*[:\-]?\s*(\d{4}/\d+)", text)
     karar = re.search(r"(?i)Karar\s*No\s*[:\-]?\s*(\d{4}/\d+)", text)
     tarih = re.search(r"(\d{1,2}[./]\d{1,2}[./]\d{4})", text)
+    
     mahkeme = "Tespit Edilemedi"
     for line in text.split('\n')[:30]:
         clean = line.strip()
@@ -81,15 +84,16 @@ def extract_metadata(text):
         "tarih": tarih.group(1) if tarih else ""
     }
 
-# --- AI FONKSİYONLARI ---
+# --- AI FONKSİYONLARI (DÜZELTİLDİ) ---
 def get_gemini_response(prompt, api_key):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # HATA DÜZELTME: 'gemini-1.5-flash' yerine standart 'gemini-pro' kullanıldı.
+        model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Hata: {str(e)}"
+        return f"AI Hatası: {str(e)}"
 
 # --- ANA UYGULAMA ---
 def main():
@@ -120,14 +124,15 @@ def main():
     if "ictihat_sonuc" not in st.session_state: st.session_state.ictihat_sonuc = ""
 
     # Dosya İşleme
-    if uploaded_file and st.session_state.get("last_file") != uploaded_file.name:
-        with st.spinner("Dosya okunuyor..."):
-            file_bytes = BytesIO(uploaded_file.getvalue())
-            ext = uploaded_file.name.split('.')[-1].lower()
-            raw_text = parse_udf(file_bytes) if ext == 'udf' else parse_pdf(file_bytes)
-            st.session_state.doc_text = raw_text
-            st.session_state.last_file = uploaded_file.name
-            st.session_state.messages = [] 
+    if uploaded_file:
+        if st.session_state.get("last_file") != uploaded_file.name:
+            with st.spinner("Dosya okunuyor..."):
+                file_bytes = BytesIO(uploaded_file.getvalue())
+                ext = uploaded_file.name.split('.')[-1].lower()
+                raw_text = parse_udf(file_bytes) if ext == 'udf' else parse_pdf(file_bytes)
+                st.session_state.doc_text = raw_text
+                st.session_state.last_file = uploaded_file.name
+                st.session_state.messages = [] 
 
     auto_data = extract_metadata(st.session_state.doc_text)
 
@@ -153,7 +158,7 @@ def main():
     # --- TAB 2: SOHBET ---
     with tab2:
         if not api_key:
-            st.error("Lütfen sol menüden API Anahtarı girin.")
+            st.info("Sohbet etmek için API anahtarını giriniz.")
         else:
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"]): st.markdown(msg["content"])
@@ -164,15 +169,16 @@ def main():
                 
                 with st.chat_message("assistant"):
                     with st.spinner("İnceleniyor..."):
-                        context = f"BELGE: {st.session_state.doc_text[:30000]}\nSORU: {prompt}"
+                        # Metin çok uzunsa kırp (Token limitini aşmamak için)
+                        safe_text = st.session_state.doc_text[:25000]
+                        context = f"BELGE: {safe_text}\nSORU: {prompt}"
                         reply = get_gemini_response(f"Sen bir hukukçusun. Belgeye göre cevapla: {context}", api_key)
                         st.markdown(reply)
                         st.session_state.messages.append({"role": "assistant", "content": reply})
 
-    # --- TAB 3: MEVZUAT ARAMA (SİTE SİMÜLASYONU) ---
+    # --- TAB 3: MEVZUAT ARAMA ---
     with tab3:
         st.subheader("📕 Mevzuat Kütüphanesi")
-        st.caption("Resmi Gazete ve Mevzuat.gov.tr veritabanına dayalı arama yapar.")
         
         col_m1, col_m2 = st.columns([3, 1])
         with col_m1:
@@ -184,32 +190,24 @@ def main():
 
         if btn_mevzuat and mevzuat_query and api_key:
             with st.spinner("Mevzuat veritabanından çekiliyor..."):
-                # Prompt Engineering: AI'ı resmi bir veritabanı gibi davranmaya zorluyoruz
                 mevzuat_prompt = f"""
                 GÖREV: Aşağıdaki kanun maddesini kelimesi kelimesine, resmi gazetedeki haliyle getir.
                 Sadece kanun metnini yaz. Yorum yapma.
                 ARANAN: {mevzuat_query}
-                
-                FORMAT:
-                **KANUN ADI**
-                **Madde No**
-                [Madde Metni]
                 """
                 res = get_gemini_response(mevzuat_prompt, api_key)
                 st.session_state.mevzuat_sonuc = res
         
         if st.session_state.mevzuat_sonuc:
             st.markdown(f"<div class='kanun-kutusu'>{st.session_state.mevzuat_sonuc}</div>", unsafe_allow_html=True)
-            st.caption("Kaynak: T.C. Mevzuat Bilgi Sistemi verilerine dayalıdır.")
 
     # --- TAB 4: İÇTİHAT ARAMA ---
     with tab4:
         st.subheader("⚖️ Emsal Karar & İçtihat Arama")
-        st.caption("Yargıtay ve BAM kararları arasında anlamsal arama yapar.")
         
         col_i1, col_i2 = st.columns([3, 1])
         with col_i1:
-            ictihat_query = st.text_input("Konu veya Anahtar Kelime (Örn: Boşanma ziynet eşyası ispat)", key="ic_q")
+            ictihat_query = st.text_input("Konu (Örn: Boşanma ziynet eşyası ispat)", key="ic_q")
         with col_i2:
             st.write("")
             st.write("")
@@ -219,12 +217,7 @@ def main():
             with st.spinner("Yüksek mahkeme kararları taranıyor..."):
                 ictihat_prompt = f"""
                 GÖREV: Türk Hukukunda "{ictihat_query}" konusuyla ilgili yerleşik Yargıtay içtihatlarını özetle.
-                
-                Şu formatta çıktı ver:
-                1. **İlgili Hukuk Dairesi:** (Örn: Yargıtay 2. Hukuk Dairesi)
-                2. **Özet İlke:** (Kararın özü nedir?)
-                3. **Detaylı Açıklama:** (Hukuki gerekçe)
-                4. **Emsal Karar Referansı:** (Varsa Esas/Karar no uydurma, yoksa 'Yerleşik İçtihat' yaz)
+                Format: İlgili Daire, Özet İlke, Detaylı Açıklama.
                 """
                 res = get_gemini_response(ictihat_prompt, api_key)
                 st.session_state.ictihat_sonuc = res
