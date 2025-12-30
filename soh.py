@@ -10,8 +10,7 @@ import google.generativeai as genai
 st.set_page_config(
     page_title="Hukuk Asistanı Pro",
     page_icon="⚖️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 # --- CSS Tasarım ---
@@ -40,7 +39,6 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- YARDIMCI FONKSİYONLAR ---
-
 def parse_udf(file_bytes):
     try:
         with zipfile.ZipFile(file_bytes) as z:
@@ -50,7 +48,7 @@ def parse_udf(file_bytes):
                     root = tree.getroot()
                     text_content = [elem.text.strip() for elem in root.iter() if elem.text]
                     return " ".join(text_content)
-            return "HATA: UDF dosyası bozuk veya content.xml bulunamadı."
+            return "HATA: UDF dosyası bozuk."
     except Exception as e:
         return f"HATA: {str(e)}"
 
@@ -58,14 +56,12 @@ def parse_pdf(file_bytes):
     try:
         reader = PdfReader(file_bytes)
         text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        if not text.strip():
-            return "UYARI: PDF metin içermiyor. Taranmış resim formatında olabilir."
-        return text
+        return text if text.strip() else "UYARI: PDF metin içermiyor (Resim formatında)."
     except Exception as e:
         return f"HATA: {str(e)}"
 
 def extract_metadata(text):
-    if not isinstance(text, str) or text.startswith("HATA") or text.startswith("UYARI"):
+    if not isinstance(text, str) or text.startswith(("HATA", "UYARI")):
         return {"mahkeme": "-", "esas": "-", "karar": "-", "tarih": "-"}
     
     esas = re.search(r"(?i)Esas\s*No\s*[:\-]?\s*(\d{4}/\d+)", text)
@@ -86,45 +82,28 @@ def extract_metadata(text):
         "tarih": tarih.group(1) if tarih else "Bulunamadı"
     }
 
-# --- AI FONKSİYONU (OTOMATİK MODEL BULUCU) ---
+# --- GÜVENLİ AI FONKSİYONU ---
 def get_gemini_response(prompt, api_key):
     if not api_key: return "Lütfen API Anahtarı giriniz."
     
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Adım: Mevcut modelleri listele ve çalışan bir tane bul
-        available_models = []
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available_models.append(m.name)
-        except:
-            pass # Listeleme başarısız olursa varsayılana dön
-
-        # Öncelik sırasına göre model seçimi
-        selected_model = 'gemini-pro' # Varsayılan (Fallback)
-        
-        # Eğer listede varsa bunları tercih et:
-        preferred_order = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro', 'models/gemini-1.0-pro']
-        
-        for pref in preferred_order:
-            if pref in available_models:
-                selected_model = pref
-                break
-        
-        # Modeli çalıştır
-        model = genai.GenerativeModel(selected_model)
+        # En güvenli, en eski ve en kararlı model ismini kullanıyoruz:
+        # 'gemini-pro' genellikle her sürümde çalışır.
+        model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
         return response.text
 
     except Exception as e:
-        return f"AI Hatası: {str(e)}\n(Kullanılan Model: {selected_model if 'selected_model' in locals() else 'Bilinmiyor'})"
+        # Eğer gemini-pro da hata verirse kullanıcıya net mesaj göster
+        return f"AI Hatası: {str(e)}\n\nÇÖZÜM: Lütfen 'requirements.txt' dosyasında 'google-generativeai==0.7.2' yazdığından emin olun ve uygulamayı Reboot edin."
 
 # --- ANA UYGULAMA ---
 def main():
     st.title("⚖️ Hukuk Asistanı Pro")
     
+    # Session State
     if "doc_text" not in st.session_state: st.session_state.doc_text = ""
     if "last_file_id" not in st.session_state: st.session_state.last_file_id = None
     if "messages" not in st.session_state: st.session_state.messages = []
@@ -135,13 +114,17 @@ def main():
         st.header("⚙️ Ayarlar")
         api_key = st.text_input("Google Gemini API Key", type="password")
         
-        # API Bağlantı Testi (Kullanıcıya bilgi vermek için)
+        # --- TEŞHİS ARACI ---
         if api_key:
-            try:
-                genai.configure(api_key=api_key)
-                st.success("API Anahtarı Bağlandı")
-            except:
-                st.error("API Anahtarı Geçersiz")
+            if st.button("🛠️ Modelleri Test Et (Debug)"):
+                try:
+                    genai.configure(api_key=api_key)
+                    models = list(genai.list_models())
+                    st.success("Bağlantı Başarılı! Kullanılabilir Modeller:")
+                    st.json([m.name for m in models if 'generateContent' in m.supported_generation_methods])
+                except Exception as e:
+                    st.error(f"Bağlantı Hatası: {e}")
+        # --------------------
 
         st.divider()
         st.header("📁 Dosya Bilgileri")
@@ -164,10 +147,7 @@ def main():
                 file_bytes = BytesIO(uploaded_file.getvalue())
                 ext = uploaded_file.name.split('.')[-1].lower()
                 
-                if ext == 'udf':
-                    raw_text = parse_udf(file_bytes)
-                else:
-                    raw_text = parse_pdf(file_bytes)
+                raw_text = parse_udf(file_bytes) if ext == 'udf' else parse_pdf(file_bytes)
                 
                 st.session_state.doc_text = raw_text
                 st.session_state.last_file_id = uploaded_file.file_id
@@ -177,7 +157,6 @@ def main():
         st.error(st.session_state.doc_text)
     elif st.session_state.doc_text.startswith("UYARI"):
         st.warning(st.session_state.doc_text)
-        st.info("Bu dosya resim formatında olduğu için metin okunamadı.")
     
     auto_data = extract_metadata(st.session_state.doc_text)
 
@@ -231,8 +210,7 @@ def main():
 
         if btn_mevzuat and mevzuat_query:
             with st.spinner("Aranıyor..."):
-                prompt = f"GÖREV: '{mevzuat_query}' maddesini tam metin yaz."
-                res = get_gemini_response(prompt, api_key)
+                res = get_gemini_response(f"GÖREV: '{mevzuat_query}' maddesini tam metin yaz.", api_key)
                 st.session_state.mevzuat_sonuc = res
         
         if st.session_state.mevzuat_sonuc:
@@ -249,8 +227,7 @@ def main():
 
         if btn_ictihat and ictihat_query:
             with st.spinner("Taranıyor..."):
-                prompt = f"GÖREV: '{ictihat_query}' konusunda Yargıtay içtihatlarını özetle."
-                res = get_gemini_response(prompt, api_key)
+                res = get_gemini_response(f"GÖREV: '{ictihat_query}' konusunda Yargıtay içtihatlarını özetle.", api_key)
                 st.session_state.ictihat_sonuc = res
 
         if st.session_state.ictihat_sonuc:
