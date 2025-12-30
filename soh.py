@@ -5,35 +5,33 @@ import re
 from pypdf import PdfReader
 from io import BytesIO
 import google.generativeai as genai
+import importlib.metadata
 
 # --- Sayfa Ayarları ---
 st.set_page_config(
-    page_title="Hukuk Asistanı Pro",
+    page_title="Hukuk Asistanı AI",
     page_icon="⚖️",
     layout="wide"
 )
 
-# --- CSS Tasarım ---
+# --- CSS ---
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
-    .stTextInput>div>div>input { border-radius: 8px; }
     .kanun-kutusu { 
-        background-color: #ffffff; 
-        padding: 20px; 
-        border-left: 5px solid #b71c1c; 
+        background-color: #fff3e0; 
+        padding: 15px; 
+        border-left: 5px solid #ff9800; 
         border-radius: 5px; 
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        margin-bottom: 15px;
+        margin-bottom: 10px;
         white-space: pre-wrap;
     }
     .ictihat-kutusu {
-        background-color: #ffffff;
-        padding: 20px;
-        border-left: 5px solid #0d47a1;
+        background-color: #e3f2fd;
+        padding: 15px;
+        border-left: 5px solid #2196f3;
         border-radius: 5px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        margin-bottom: 15px;
+        margin-bottom: 10px;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -48,7 +46,7 @@ def parse_udf(file_bytes):
                     root = tree.getroot()
                     text_content = [elem.text.strip() for elem in root.iter() if elem.text]
                     return " ".join(text_content)
-            return "HATA: UDF dosyası bozuk."
+            return "HATA: UDF içeriği okunamadı."
     except Exception as e:
         return f"HATA: {str(e)}"
 
@@ -56,7 +54,7 @@ def parse_pdf(file_bytes):
     try:
         reader = PdfReader(file_bytes)
         text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        return text if text.strip() else "UYARI: PDF metin içermiyor (Resim formatında)."
+        return text if text.strip() else "UYARI: PDF metin içermiyor (Resim olabilir)."
     except Exception as e:
         return f"HATA: {str(e)}"
 
@@ -74,7 +72,6 @@ def extract_metadata(text):
         if ("MAHKEMESİ" in clean.upper() or "DAİRESİ" in clean.upper()) and len(clean) > 5:
             mahkeme = clean
             break
-            
     return {
         "mahkeme": mahkeme,
         "esas": esas.group(1) if esas else "Bulunamadı",
@@ -82,27 +79,58 @@ def extract_metadata(text):
         "tarih": tarih.group(1) if tarih else "Bulunamadı"
     }
 
-# --- GÜVENLİ AI FONKSİYONU ---
-def get_gemini_response(prompt, api_key):
+# --- AKILLI AI MOTORU (HATA ÇÖZÜCÜ) ---
+def get_ai_response(prompt, api_key):
     if not api_key: return "Lütfen API Anahtarı giriniz."
     
-    try:
-        genai.configure(api_key=api_key)
-        
-        # En güvenli, en eski ve en kararlı model ismini kullanıyoruz:
-        # 'gemini-pro' genellikle her sürümde çalışır.
-        model = genai.GenerativeModel('gemini-pro')
-        response = model.generate_content(prompt)
-        return response.text
+    genai.configure(api_key=api_key)
+    
+    # Denenecek Modeller Listesi (En yeniden en eskiye)
+    # Google şu an 'gemini-1.5-flash' modelini standart yaptı.
+    candidate_models = [
+        'gemini-1.5-flash',
+        'gemini-1.5-pro',
+        'gemini-1.0-pro',
+        'gemini-pro'
+    ]
+    
+    last_error = ""
+    
+    # 1. YÖNTEM: Listeden sırayla dene
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text # Başarılıysa döndür ve çık
+        except Exception as e:
+            last_error = str(e)
+            continue # Hata verirse bir sonrakini dene
 
-    except Exception as e:
-        # Eğer gemini-pro da hata verirse kullanıcıya net mesaj göster
-        return f"AI Hatası: {str(e)}\n\nÇÖZÜM: Lütfen 'requirements.txt' dosyasında 'google-generativeai==0.7.2' yazdığından emin olun ve uygulamayı Reboot edin."
+    # 2. YÖNTEM: Eğer hepsi başarısızsa, API'den dinamik liste iste
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                try:
+                    model = genai.GenerativeModel(m.name)
+                    response = model.generate_content(prompt)
+                    return response.text
+                except:
+                    continue
+    except:
+        pass
+
+    return f"Tüm modeller denendi ve başarısız oldu. Son Hata: {last_error}\nLütfen API Anahtarınızın geçerli olduğundan emin olun."
 
 # --- ANA UYGULAMA ---
 def main():
-    st.title("⚖️ Hukuk Asistanı Pro")
+    st.title("⚖️ Hukuk Asistanı (v3.0)")
     
+    # Kütüphane Sürüm Kontrolü (Debug için)
+    try:
+        lib_ver = importlib.metadata.version("google-generativeai")
+    except:
+        lib_ver = "Bilinmiyor"
+
     # Session State
     if "doc_text" not in st.session_state: st.session_state.doc_text = ""
     if "last_file_id" not in st.session_state: st.session_state.last_file_id = None
@@ -113,123 +141,82 @@ def main():
     with st.sidebar:
         st.header("⚙️ Ayarlar")
         api_key = st.text_input("Google Gemini API Key", type="password")
+        st.caption(f"Kütüphane Sürümü: {lib_ver}")
         
-        # --- TEŞHİS ARACI ---
-        if api_key:
-            if st.button("🛠️ Modelleri Test Et (Debug)"):
-                try:
-                    genai.configure(api_key=api_key)
-                    models = list(genai.list_models())
-                    st.success("Bağlantı Başarılı! Kullanılabilir Modeller:")
-                    st.json([m.name for m in models if 'generateContent' in m.supported_generation_methods])
-                except Exception as e:
-                    st.error(f"Bağlantı Hatası: {e}")
-        # --------------------
-
         st.divider()
         st.header("📁 Dosya Bilgileri")
-        input_davaci = st.text_input("Davacı / Alacaklı")
-        input_davali = st.text_input("Davalı / Borçlu")
-        input_mahkeme = st.text_input("Mahkeme (Manuel)")
-        input_dosya_no = st.text_input("Dosya No (Manuel)")
+        input_davaci = st.text_input("Davacı")
+        input_davali = st.text_input("Davalı")
+        input_mahkeme = st.text_input("Mahkeme")
+        input_dosya_no = st.text_input("Dosya No")
         
-        if st.button("Sıfırla / Yeni Dosya"):
+        if st.button("🗑️ Temizle"):
             st.session_state.doc_text = ""
             st.session_state.last_file_id = None
             st.session_state.messages = []
             st.rerun()
 
-    uploaded_file = st.file_uploader("Dosya Yükle (UDF/PDF)", type=['udf', 'pdf'], key="uploader")
+    uploaded_file = st.file_uploader("Dosya Yükle (UDF/PDF)", type=['udf', 'pdf'])
 
-    if uploaded_file is not None:
-        if st.session_state.last_file_id != uploaded_file.file_id:
-            with st.spinner("Dosya analiz ediliyor..."):
-                file_bytes = BytesIO(uploaded_file.getvalue())
-                ext = uploaded_file.name.split('.')[-1].lower()
-                
-                raw_text = parse_udf(file_bytes) if ext == 'udf' else parse_pdf(file_bytes)
-                
-                st.session_state.doc_text = raw_text
-                st.session_state.last_file_id = uploaded_file.file_id
-                st.session_state.messages = []
-                
-    if st.session_state.doc_text.startswith("HATA"):
-        st.error(st.session_state.doc_text)
-    elif st.session_state.doc_text.startswith("UYARI"):
+    if uploaded_file and st.session_state.last_file_id != uploaded_file.file_id:
+        with st.spinner("Okunuyor..."):
+            file_bytes = BytesIO(uploaded_file.getvalue())
+            ext = uploaded_file.name.split('.')[-1].lower()
+            raw_text = parse_udf(file_bytes) if ext == 'udf' else parse_pdf(file_bytes)
+            st.session_state.doc_text = raw_text
+            st.session_state.last_file_id = uploaded_file.file_id
+            st.session_state.messages = []
+
+    if st.session_state.doc_text.startswith(("HATA", "UYARI")):
         st.warning(st.session_state.doc_text)
     
     auto_data = extract_metadata(st.session_state.doc_text)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dosya Analizi", "💬 Dosya Sohbeti", "📕 Mevzuat Ara", "⚖️ İçtihat Ara"])
+    # --- SEKMELER ---
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Analiz", "💬 Sohbet", "📕 Mevzuat", "⚖️ İçtihat"])
 
     with tab1:
-        if not st.session_state.doc_text or st.session_state.doc_text.startswith(("HATA", "UYARI")):
-            st.info("Lütfen geçerli bir dosya yükleyin.")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"**Mahkeme:** {input_mahkeme or auto_data['mahkeme']}")
-                st.markdown(f"**Dosya No:** {input_dosya_no or auto_data['esas']}")
-                st.markdown(f"**Karar No:** {auto_data['karar']}")
-                st.markdown(f"**Tarih:** {auto_data['tarih']}")
-            with col2:
-                st.markdown(f"**Davacı:** {input_davaci or '-'}")
-                st.markdown(f"**Davalı:** {input_davali or '-'}")
-            
-            st.divider()
-            with st.expander("📄 Ham Metni Gör"):
-                st.text_area("Metin", st.session_state.doc_text, height=200)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Mahkeme:** {input_mahkeme or auto_data['mahkeme']}")
+            st.write(f"**Dosya No:** {input_dosya_no or auto_data['esas']}")
+        with col2:
+            st.write(f"**Davacı:** {input_davaci or '-'}")
+            st.write(f"**Davalı:** {input_davali or '-'}")
+        st.text_area("Metin Önizleme", st.session_state.doc_text, height=150)
 
     with tab2:
-        if not api_key:
-            st.error("API Anahtarı gerekli.")
-        else:
-            for msg in st.session_state.messages:
-                with st.chat_message(msg["role"]): st.markdown(msg["content"])
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-            if prompt := st.chat_input("Soru sor..."):
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"): st.markdown(prompt)
-                
-                with st.chat_message("assistant"):
-                    with st.spinner("Düşünülüyor..."):
-                        safe_text = st.session_state.doc_text[:25000]
-                        context = f"BELGE: {safe_text}\nSORU: {prompt}"
-                        reply = get_gemini_response(f"Hukukçu gibi cevapla: {context}", api_key)
-                        st.markdown(reply)
-                        st.session_state.messages.append({"role": "assistant", "content": reply})
+        if prompt := st.chat_input("Soru sor..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"): st.markdown(prompt)
+            
+            with st.chat_message("assistant"):
+                with st.spinner("AI Yanıtlıyor..."):
+                    context = f"BELGE: {st.session_state.doc_text[:20000]}\nSORU: {prompt}"
+                    reply = get_ai_response(f"Sen bir avukatsın. Şuna cevap ver: {context}", api_key)
+                    st.markdown(reply)
+                    st.session_state.messages.append({"role": "assistant", "content": reply})
 
     with tab3:
-        st.subheader("📕 Mevzuat")
-        col_m1, col_m2 = st.columns([3, 1])
-        with col_m1: mevzuat_query = st.text_input("Kanun/Madde", key="mev_q")
-        with col_m2: 
-            st.write("")
-            st.write("")
-            btn_mevzuat = st.button("Getir", type="primary")
-
-        if btn_mevzuat and mevzuat_query:
+        c1, c2 = st.columns([3,1])
+        q = c1.text_input("Kanun Madde No", key="mq")
+        if c2.button("Getir", key="mb") and q:
             with st.spinner("Aranıyor..."):
-                res = get_gemini_response(f"GÖREV: '{mevzuat_query}' maddesini tam metin yaz.", api_key)
+                res = get_ai_response(f"GÖREV: '{q}' maddesini tam metin yaz.", api_key)
                 st.session_state.mevzuat_sonuc = res
-        
         if st.session_state.mevzuat_sonuc:
             st.markdown(f"<div class='kanun-kutusu'>{st.session_state.mevzuat_sonuc}</div>", unsafe_allow_html=True)
 
     with tab4:
-        st.subheader("⚖️ İçtihat")
-        col_i1, col_i2 = st.columns([3, 1])
-        with col_i1: ictihat_query = st.text_input("Konu", key="ic_q")
-        with col_i2: 
-            st.write("")
-            st.write("")
-            btn_ictihat = st.button("Ara", type="primary")
-
-        if btn_ictihat and ictihat_query:
+        c3, c4 = st.columns([3,1])
+        iq = c3.text_input("İçtihat Konusu", key="iq")
+        if c4.button("Ara", key="ib") and iq:
             with st.spinner("Taranıyor..."):
-                res = get_gemini_response(f"GÖREV: '{ictihat_query}' konusunda Yargıtay içtihatlarını özetle.", api_key)
+                res = get_ai_response(f"GÖREV: '{iq}' hakkında Yargıtay kararlarını özetle.", api_key)
                 st.session_state.ictihat_sonuc = res
-
         if st.session_state.ictihat_sonuc:
             st.markdown(f"<div class='ictihat-kutusu'>{st.session_state.ictihat_sonuc}</div>", unsafe_allow_html=True)
 
