@@ -86,33 +86,40 @@ def extract_metadata(text):
         "tarih": tarih.group(1) if tarih else "Bulunamadı"
     }
 
-# --- AI FONKSİYONU (AKILLI MODEL SEÇİCİ) ---
+# --- AI FONKSİYONU (OTOMATİK MODEL BULUCU) ---
 def get_gemini_response(prompt, api_key):
     if not api_key: return "Lütfen API Anahtarı giriniz."
     
-    genai.configure(api_key=api_key)
-    
-    # Sırasıyla denenecek modeller listesi
-    # Biri hata verirse diğerine geçer.
-    models_to_try = [
-        'gemini-1.5-flash', # En hızlı ve yeni
-        'gemini-pro',       # Standart
-        'gemini-1.0-pro',   # Eski kararlı sürüm
-        'gemini-1.5-pro'    # En güçlü sürüm
-    ]
-    
-    last_error = ""
-    
-    for model_name in models_to_try:
+    try:
+        genai.configure(api_key=api_key)
+        
+        # 1. Adım: Mevcut modelleri listele ve çalışan bir tane bul
+        available_models = []
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            last_error = str(e)
-            continue # Bir sonraki modeli dene
-            
-    return f"Tüm modeller denendi ancak hata alındı. Son hata: {last_error}"
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+        except:
+            pass # Listeleme başarısız olursa varsayılana dön
+
+        # Öncelik sırasına göre model seçimi
+        selected_model = 'gemini-pro' # Varsayılan (Fallback)
+        
+        # Eğer listede varsa bunları tercih et:
+        preferred_order = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro', 'models/gemini-1.0-pro']
+        
+        for pref in preferred_order:
+            if pref in available_models:
+                selected_model = pref
+                break
+        
+        # Modeli çalıştır
+        model = genai.GenerativeModel(selected_model)
+        response = model.generate_content(prompt)
+        return response.text
+
+    except Exception as e:
+        return f"AI Hatası: {str(e)}\n(Kullanılan Model: {selected_model if 'selected_model' in locals() else 'Bilinmiyor'})"
 
 # --- ANA UYGULAMA ---
 def main():
@@ -127,9 +134,15 @@ def main():
     with st.sidebar:
         st.header("⚙️ Ayarlar")
         api_key = st.text_input("Google Gemini API Key", type="password")
-        if not api_key:
-            st.info("Sohbet ve Mevzuat için API Key gereklidir.")
         
+        # API Bağlantı Testi (Kullanıcıya bilgi vermek için)
+        if api_key:
+            try:
+                genai.configure(api_key=api_key)
+                st.success("API Anahtarı Bağlandı")
+            except:
+                st.error("API Anahtarı Geçersiz")
+
         st.divider()
         st.header("📁 Dosya Bilgileri")
         input_davaci = st.text_input("Davacı / Alacaklı")
